@@ -11,6 +11,8 @@
 > ⚠️ **ALPHA RELEASE — v1.0.5**
 > This is an early access release. Core systems are functional and production-tested, but edge cases may still exist. Report bugs on GitHub.
 
+<img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/ead04a76-b88d-4218-840c-b44cdda00573" />
+
 > **The world's first open-source advanced death system for ox_core.**
 > Built by [Red Dragon Elite](https://rd-elite.com) — Free Forever. No Paywalls. No Gatekeepers.
 
