@@ -304,38 +304,49 @@ end
 -- FIX: Accept optional pre-resolved charId to avoid race conditions where
 -- GetCharId(source) returns nil right after login/revive (ox_core not yet settled).
 local function DB_SetIsDead(source, isDeadBool, resolvedCharId)
-    if not mysqlReady or not Config.Database.enabled then return false end
+    if not Config.Database.enabled then return false end
+
+    local val = isDeadBool and 1 or 0
+
+    -- PRIMARY: tell ox_core about the state change via player.set()
+    -- This updates ox_core's in-memory character state so it won't
+    -- overwrite our DB write when it calls player.save() later.
+    local player = GetOxPlayer(source)
+    if player then
+        pcall(function()
+            player.set('isDead', isDeadBool)
+        end)
+        Debug(string.format('📡 player.set(isDead, %s) for source %d', tostring(isDeadBool), source))
+    end
+
+    -- SECONDARY: direct DB write as belt-and-suspenders
+    if not mysqlReady then return false end
 
     local charId = resolvedCharId or GetCharId(source)
 
-    -- If charId still nil, retry up to 3 times with 800ms spacing.
-    -- This covers the race between rde_aimd and ox_core character load.
     if not charId then
-        local retries = 0
+        -- Last resort: retry once after ox_core has settled
         CreateThread(function()
-            while retries < 3 do
-                Wait(800)
-                retries = retries + 1
-                charId = GetCharId(source)
-                if charId then break end
-                Debug(string.format('DB_SetIsDead: retry %d/3 — charId still nil for source %d', retries, source))
+            Wait(1000)
+            local p = GetOxPlayer(source)
+            if p then
+                charId = p.charId
+                pcall(function() p.set('isDead', isDeadBool) end)
             end
-            if not charId then
-                Debug(string.format('DB_SetIsDead: giving up — no charId for source %d after retries', source))
-                return
+            if charId then
+                pcall(function()
+                    MySQL.update.await(
+                        'UPDATE `characters` SET `isDead` = ? WHERE `charid` = ?',
+                        { val, charId })
+                    Debug(string.format('🔄 isDead retry → %d for charId=%d', val, charId))
+                end)
+            else
+                Debug(string.format('DB_SetIsDead: giving up — no charId for source %d', source))
             end
-            local val = isDeadBool and 1 or 0
-            pcall(function()
-                MySQL.update.await(
-                    'UPDATE `characters` SET `isDead` = ? WHERE `charid` = ?',
-                    { val, charId })
-                Debug(string.format('🔄 isDead (delayed) → %d for charId=%d', val, charId))
-            end)
         end)
         return false
     end
 
-    local val = isDeadBool and 1 or 0
     local ok, rows = pcall(function()
         return MySQL.update.await(
             'UPDATE `characters` SET `isDead` = ? WHERE `charid` = ?',
@@ -346,15 +357,7 @@ local function DB_SetIsDead(source, isDeadBool, resolvedCharId)
         Debug(string.format('✅ isDead → %d for charId=%d', val, charId))
         return true
     else
-        -- Hard retry with known charId
-        SetTimeout(1000, function()
-            pcall(function()
-                MySQL.update.await(
-                    'UPDATE `characters` SET `isDead` = ? WHERE `charid` = ?',
-                    { val, charId })
-                Debug(string.format('🔄 isDead retry → %d for charId=%d', val, charId))
-            end)
-        end)
+        Debug(string.format('⚠️ MySQL update failed for charId=%d, player.set was still applied', charId))
         return false
     end
 end
@@ -706,14 +709,32 @@ RegisterNetEvent('rde_death:doctorTreat', function()
         return
     end
 
-    ClearDeathState(src)
-
-    -- Belt-and-suspenders: force isDead=0 in DB directly.
-    -- ClearDeathState can silently fail if GetCharId races with ox_core.
+    -- Resolve charId BEFORE ClearDeathState so both the statebag clear
+    -- and the direct DB update share the same guaranteed charId.
+    -- GetCharId() can return nil inside an event handler if ox_core hasn't
+    -- fully settled — resolving it once here avoids two separate race windows.
     local charId = GetCharId(src)
+
+    -- Pass resolvedCharId through so DB_SetIsDead never hits the nil-retry path
+    ClearDeathState(src, charId)
+
+    -- Belt-and-suspenders: direct DB update with the already-resolved charId.
+    -- This runs synchronously (await) so isDead=0 is committed before doctorRevive fires.
     if charId and mysqlReady then
         pcall(function()
             MySQL.update.await('UPDATE `characters` SET `isDead` = 0 WHERE `charid` = ?', { charId })
+            Debug(string.format('✅ doctorTreat: isDead=0 committed for charId=%d', charId))
+        end)
+    else
+        -- charId still nil (extreme edge case) — schedule one guaranteed retry
+        SetTimeout(1500, function()
+            local retryCharId = GetCharId(src)
+            if retryCharId and mysqlReady then
+                pcall(function()
+                    MySQL.update.await('UPDATE `characters` SET `isDead` = 0 WHERE `charid` = ?', { retryCharId })
+                    Debug(string.format('🔄 doctorTreat retry: isDead=0 committed for charId=%d', retryCharId))
+                end)
+            end
         end)
     end
 
@@ -750,7 +771,14 @@ RegisterNetEvent('rde_death:respawn', function()
     local hospital = NearestHospital(GetEntityCoords(ped))
     if not hospital then return end
 
-    ClearDeathState(src)
+    local charId = GetCharId(src)
+    ClearDeathState(src, charId)
+    if charId and mysqlReady then
+        pcall(function()
+            MySQL.update.await('UPDATE `characters` SET `isDead` = 0 WHERE `charid` = ?', { charId })
+            Debug(string.format('✅ respawn: isDead=0 committed for charId=%d', charId))
+        end)
+    end
     TriggerClientEvent('rde_death:doRespawn', src, hospital)
 
     Stats.totalRespawns = Stats.totalRespawns + 1

@@ -1,15 +1,12 @@
 # 🐉 RDE AIMD — AI Medical Department
 
-[![Version](https://img.shields.io/badge/version-1.0.5--alpha-red?style=for-the-badge)](https://github.com/RedDragonElite/rde_aimd)
+[![Version](https://img.shields.io/badge/version-1.0.6-red?style=for-the-badge)](https://github.com/RedDragonElite/rde_aimd)
 [![License](https://img.shields.io/badge/license-RDE%20Black%20Flag-black?style=for-the-badge)](./LICENSE)
 [![Framework](https://img.shields.io/badge/Framework-ox__core-blue?style=for-the-badge)](https://github.com/overextended/ox_core)
 [![ox_lib](https://img.shields.io/badge/UI-ox__lib-purple?style=for-the-badge)](https://github.com/overextended/ox_lib)
 [![FiveM](https://img.shields.io/badge/FiveM-Compatible-blue?style=for-the-badge)](https://fivem.net)
 [![Free](https://img.shields.io/badge/Price-FREE%20FOREVER-green?style=for-the-badge)](https://github.com/RedDragonElite)
-[![Status](https://img.shields.io/badge/status-ALPHA-orange?style=for-the-badge)](https://github.com/RedDragonElite/rde_aimd)
-
-> ⚠️ **ALPHA RELEASE — v1.0.5**
-> This is an early access release. Core systems are functional and production-tested, but edge cases may still exist. Report bugs on GitHub.
+[![Status](https://img.shields.io/badge/status-STABLE-brightgreen?style=for-the-badge)](https://github.com/RedDragonElite/rde_aimd)
 
 <img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/ead04a76-b88d-4218-840c-b44cdda00573" />
 
@@ -35,6 +32,23 @@ Provides the `deathSystem` resource interface — other scripts can depend on it
 | Discord webhook logging | Optional **rde_nostr_log** — decentralized forever |
 | Admin revive = same as doctor | Separate events — realistic behavior per context |
 | No DB persistence | **isDead** bulletproof DB sync — survives restarts |
+
+---
+
+## 📋 Changelog
+
+### v1.0.6 — isDead Sync Root Cause Fix
+- **FIX: `isDead` stays `true` in DB after doctor heal or respawn**
+  The previous approach wrote `isDead=0` directly to `characters.isDead` via `MySQL.update` — but ox_core maintains its **own in-memory character state**. When ox_core called `player.save()` (on disconnect, logout, or periodic save), it wrote its in-memory state back to the DB, silently overwriting our direct write. The `isDead=true` from login survived because ox_core never knew it had changed.
+  **The fix:** `DB_SetIsDead` now calls `player.set('isDead', false)` first — this updates ox_core's in-memory state so its next `player.save()` commits `false`, not the old stale value. The direct `MySQL.update` follows as belt-and-suspenders. Both are now in sync and ox_core can no longer overwrite the revive.
+
+### v1.0.5
+- FIX #7: `TriggerEvent('rde_death:localRevive')` after every revive path — closes isDead sync gap for `rde_aipd` and other external scripts
+- `isDead=1` on login: auto-clear + hospital respawn instead of re-applying death state
+- `onResourceStop`: reset `isDead=0` in DB for all currently-dead players — no more stuck-dead after server restart
+- `resolvedCharId` threading: `ox:playerLoaded` resolves charId once and passes it all the way through `ClearDeathState` → `DB_SetIsDead`
+- Separate `doctorRevive` / `adminRevive` events — doctor departs naturally, admin cleanup is instant
+- 🌿 Grass Fix: stuck-detection loop + forced off-road arrival via `TaskGoToCoordAnyMeans`
 
 ---
 
@@ -81,7 +95,7 @@ Provides the `deathSystem` resource interface — other scripts can depend on it
 - **`rde_death:forceDeathState`** — net event to force-apply death state on the client from server side
 
 ### 📊 Persistence & Logging
-- **Bulletproof isDead sync** — always written to `characters.isDead` in DB
+- **Bulletproof isDead sync** — `player.set('isDead', ...)` keeps ox_core in-memory state correct; direct `MySQL.update` as belt-and-suspenders (v1.0.6)
 - **onResourceStop cleanup** — resets `isDead=0` for all currently-dead players on server/resource restart
 - **Auto-create tables** — `rde_death_logs`, `rde_doctor_calls`, `rde_death_statistics`
 - **Auto-prune** — configurable log retention (default: `30 days`)
@@ -395,8 +409,8 @@ local stats = exports['rde_aimd']:GetStats()
 
 Tables are auto-created on first server start. No SQL file to import.
 
-**`rde_death_logs`** — every player death with injury type, coords, blood loss, cause  
-**`rde_doctor_calls`** — every ambulance dispatch with cost, distance, response time, success  
+**`rde_death_logs`** — every player death with injury type, coords, blood loss, cause
+**`rde_doctor_calls`** — every ambulance dispatch with cost, distance, response time, success
 **`rde_death_statistics`** — global server totals (single row, persisted, auto-updated)
 
 Also writes to `characters.isDead` (ox_core standard column) to persist death state across restarts.
@@ -441,7 +455,7 @@ Fallback: ox_core groups `admin`, `superadmin`, `god`.
 
 ---
 
-## 🐛 Known Alpha Issues / Limitations
+## 🐛 Known Issues / Limitations
 
 - `successRate = 95` is in config but not yet wired to a failure path — treatment always succeeds. Marked as future use.
 - Critical blood loss Nostr event (≥75% threshold) is coded in `NostrLog` but not called from the bleedout loop yet.
@@ -470,6 +484,7 @@ Fallback: ox_core groups `admin`, `superadmin`, `god`.
 | 🌍 Website | [rd-elite.com](https://rd-elite.com) |
 | ⚡ rde_nostr_log | [Decentralized Logging](https://github.com/RedDragonElite/rde_nostr_log) |
 | 📖 OX Standards | [rde_ox_standards](https://github.com/RedDragonElite/rde_ox_standards) |
+| 🚗 RDE Car Service | [rde_carservice](https://github.com/RedDragonElite/rde_carservice) |
 
 ---
 
