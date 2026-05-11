@@ -308,31 +308,31 @@ local function DB_SetIsDead(source, isDeadBool, resolvedCharId)
 
     local val = isDeadBool and 1 or 0
 
-    -- PRIMARY: tell ox_core about the state change via player.set()
-    -- This updates ox_core's in-memory character state so it won't
-    -- overwrite our DB write when it calls player.save() later.
+    -- PRIMARY: set ox_core's own isDead player statebag directly.
+    -- ox_core's player.save() reads Player(source).state.isDead when committing to DB.
+    -- Without this, ox_core overwrites our MySQL update with the old stale value on save.
+    pcall(function()
+        Player(source).state:set('isDead', isDeadBool, true)
+    end)
+    Debug(string.format('📡 Player(%d).state:set(isDead, %s)', source, tostring(isDeadBool)))
+
+    -- Also hit player.set() for any in-memory metadata path ox_core may use
     local player = GetOxPlayer(source)
     if player then
-        pcall(function()
-            player.set('isDead', isDeadBool)
-        end)
-        Debug(string.format('📡 player.set(isDead, %s) for source %d', tostring(isDeadBool), source))
+        pcall(function() player.set('isDead', isDeadBool) end)
     end
 
-    -- SECONDARY: direct DB write as belt-and-suspenders
+    -- SECONDARY: direct MySQL write as belt-and-suspenders
     if not mysqlReady then return false end
 
     local charId = resolvedCharId or GetCharId(source)
 
     if not charId then
-        -- Last resort: retry once after ox_core has settled
         CreateThread(function()
             Wait(1000)
-            local p = GetOxPlayer(source)
-            if p then
-                charId = p.charId
-                pcall(function() p.set('isDead', isDeadBool) end)
-            end
+            -- Retry statebag in case player wasn't fully initialised yet
+            pcall(function() Player(source).state:set('isDead', isDeadBool, true) end)
+            charId = GetCharId(source)
             if charId then
                 pcall(function()
                     MySQL.update.await(
@@ -357,7 +357,7 @@ local function DB_SetIsDead(source, isDeadBool, resolvedCharId)
         Debug(string.format('✅ isDead → %d for charId=%d', val, charId))
         return true
     else
-        Debug(string.format('⚠️ MySQL update failed for charId=%d, player.set was still applied', charId))
+        Debug(string.format('⚠️ MySQL update failed for charId=%d', charId))
         return false
     end
 end
